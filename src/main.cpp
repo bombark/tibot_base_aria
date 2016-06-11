@@ -3,18 +3,18 @@
 #include <tiobj.hpp>
 #include <tisys.hpp>
 #include <Aria/Aria.h>
-
+#include <unistd.h>
+#include <sys/file.h>
+#include <cassert>
 
 using namespace std;
 
 
 int   G_id;
-FILE* G_SONAR_FD;
-FILE* G_pose_fd;
-
 int G_count = 0;
 int G_speed = 0;
 int G_rotation = 0;
+
 
 void readSonars(ArRobot& robot, int numSonar){
 	char angle[64], value[64];
@@ -25,31 +25,37 @@ void readSonars(ArRobot& robot, int numSonar){
 		sonarReading = robot.getSonarReading(i);
 		sprintf(value,"v%d=%05d;", i, sonarReading->getRange());
 		res += value;
-		//cout << "Sonar reading " << i << " = " << sonarReading->getRange() << " Angle " << i << " = " << sonarReading->getSensorTh() << "\n";
 	}
 	res += "\n";
-	fseek(G_SONAR_FD, SEEK_SET, 0);
-	fwrite(res.c_str(), sizeof(char), res.size(), G_SONAR_FD);
+
+	FILE* fd = fopen("sonars","w");
+	flock( fileno(fd), LOCK_SH );
+	fwrite(res.c_str(), sizeof(char), res.size(), fd);
+	flock( fileno(fd), LOCK_UN );
+	fclose(fd);
 }
 
 
 void readPosition(ArRobot& robot){
 	ArPose pose = robot.getPose();
-	fseek(G_pose_fd, SEEK_SET, 0);
-	fprintf(G_pose_fd, "x=%0.6f;y=%0.6f;th=%0.6f;\n", pose.getX(), pose.getY(), pose.getTh());
+	FILE* fd = fopen("odom","w");
+	flock( fileno(fd), LOCK_SH );
+	fprintf(fd, "x=%0.6f;y=%0.6f;th=%0.6f;\n", pose.getX(), pose.getY(), pose.getTh());
+	flock( fileno(fd), LOCK_UN );
+	fclose(fd);
 }
 
 void readMotors(){
 	TiObj motor;
 	motor.set("speed",G_speed);
 	motor.set("rotation",G_rotation);
-	motor.saveFile("motors");
+	motor.save("motors", true);
 }
 
 
 void setMotors(ArRobot& robot){
-	TiObj motor;
-	motor.loadFile("cmd");
+	TiObj motor(true, "cmd");
+	truncate("cmd", 0);
 
 	if ( motor.has("speed") || motor.has("speed_i") || motor.has("rotation") || motor.has("rotation_i") ){
 		G_count = 1;
@@ -74,21 +80,15 @@ void setMotors(ArRobot& robot){
 			}
 		}
 		robot.unlock();
-
-		FILE* fd = fopen("cmd","w");
-		fclose(fd);
 	}
 	//
 }
 
 
-void fake(){
-	//fprintf(G_pose_fd, "x=%0.6f;y=%0.6f;th=%0.6f;\n", pose.getX(), pose.getY(), pose.getTh());
-
-
+void sig_hnd(int sig){
+	Aria::exit(0);
+	printf("Aria Exit");
 }
-
-
 
 
 int main(int argc, char **argv){
@@ -96,12 +96,9 @@ int main(int argc, char **argv){
 	TiObj params;
 	params.loadText(getenv("params"));
 	string url = params.atStr("url");
-	chdir(url.c_str());
+	assert(  chdir(url.c_str())  );
 
 	G_id = 0;
-	G_SONAR_FD = fopen("sonars","w");
-	G_pose_fd  = fopen("pose","w");
-
 	FILE* aux = fopen("cmd","w");
 	fclose(aux);
 
@@ -114,14 +111,8 @@ int main(int argc, char **argv){
 	ArRobot robot;
 	ArArgumentParser parser(&robot_argc, robot_argv);
 	ArSimpleConnector connector(&parser);
-
-
 	parser.loadDefaultArguments();
-
-
 	Aria::logOptions();
-
-
 
 	if (!connector.parseArgs()){
 		cout << "Unknown settings\n";
@@ -129,15 +120,13 @@ int main(int argc, char **argv){
 		exit(1);
 	}
 
-
-
 	if (!connector.connectRobot(&robot)){
 		cout << "Unable to connect\n";
 		Aria::exit(0);
 		exit(1);
 	}
 
-
+	signal( SIGINT, sig_hnd );
 
 	robot.runAsync(true);
 	robot.lock();
@@ -186,7 +175,4 @@ int main(int argc, char **argv){
 		usleep(20000);
 	}
 
-	fclose(G_SONAR_FD);
-	fclose(G_pose_fd);
-	Aria::exit(0);
 }
